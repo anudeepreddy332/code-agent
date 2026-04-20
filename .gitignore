@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.Python
+env/
+venv/
+.env
+*.egg-info/
+dist/
+build/
+
+
+# API keys and environment
+.env.local
+
+# LangSmith / LangFuse logs (if written locally)
+langsmith_runs/
+langfuse_runs/
+
+# Outputs from code execution (temp scripts)
+tests/broken_scripts/__pycache__/
+*.pyc
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
