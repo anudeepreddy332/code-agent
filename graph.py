@@ -47,6 +47,7 @@ class AgentState(TypedDict):
     patch_explanation: str | None  # LLM's explanation of what it changed
     evaluator_score: int | None  # 1-10 score from evaluator node
     run_id: str                  # unique ID for this run (for logging)
+    attempt_history: list[dict]  # [{code, error, diagnosis, patch_explanation}, ...]
 
 
 def _make_client() -> ChatOpenAI:
@@ -92,13 +93,21 @@ def _track_cost(state: AgentState, response) -> dict:
 
 def node_execute(state: AgentState) -> dict:
     """
-    Execute current code in subprocess. Capture result into state.
+    Execute current code in subprocess. Archive previous attempt before overwriting error state.
+
+    Why archive here: after execute runs, the state fields (error, exit_code)
+    are about to be overwritten with the new execution result.
 
     Why this is a separate node and not part of diagnose:
     Separation of concerns. Execute is deterministic - same code, same result.
     Diagnose is an LLM call - expensive and non-deterministic.
     Keeping them separate means you can re-execute without re-diagnosing
     (useful for the evaluator node later).
+
+    Vulnerability: attempt_history grows unboundedly. At MAX_ITERATIONS=5,
+    max 5 entries — acceptable. If MAX_ITERATIONS is raised significantly,
+    the history injected into the prompt will eventually exceed context limits.
+    Mitigation: only inject the last 3 attempts into the prompt.
     """
     print(f"\n[execute] iteration {state['iterations'] + 1}")
     result = execute_python(state["code"])
@@ -106,11 +115,24 @@ def node_execute(state: AgentState) -> dict:
     if result["stderr"]:
         print(f"  stderr: {result['stderr'][:200]}")
 
+    # Archive the current attempt before state is overwritten
+    # Only archive if there was a previous diagnosis (skip the very first execution)
+
+    new_history = list(state.get("attempt_history", []))
+    if state.get("diagnosis") is not None:
+        new_history.append({
+            "code": state["code"],
+            "error": state.get("error", ""),
+            "diagnosis": state.get("diagnosis", ""),
+            "patch_explanation": state.get("patch_explanation" ""),
+        })
+
     return {
         "stdout": result["stdout"],
         "error": result["stderr"] if not result["success"] else None,
         "exit_code": result["exit_code"],
         "iterations": state["iterations"] + 1,
+        "attempt_history": new_history,
     }
 
 
@@ -155,7 +177,11 @@ def should_continue(state: AgentState) -> Literal["diagnose", "evaluate", "end"]
 
 def node_diagnose(state: AgentState) -> dict:
     """
-    Ask DeepSeek to diagnose the error. Store explanation in state.
+    Reflexion-enhanced diagnose node. Ask DeepSeek to diagnose the error. Store explanation in state.
+
+    On iteration 1: standard diagnosis — what's wrong with this code?
+    On iteration 2+: reflexion — here's what was tried, why did it fail,
+    what should be tried differently?
 
     Why separate from patch: forcing the LLM to first articulate what's wrong
     before patching improves patch quality. This is the Reflexion pattern -
@@ -169,23 +195,58 @@ def node_diagnose(state: AgentState) -> dict:
     The LLM can still diagnose this - infinite loop, blocking call, etc.
     """
     client = _make_client()
-    messages = [
-        SystemMessage(content=(
+
+    history = state.get("attempt_history", [])
+    is_reflexion = len(history) > 0
+
+    if not is_reflexion:
+        system_content = (
             "You are a Python debugging expert. "
             "You will be given a Python script and its error output. "
             "Diagnose the root cause of the error in 2-3 sentences. "
             "Be specific — identify the exact line or construct causing the failure. "
             "Do not suggest fixes yet. Just diagnose."
-        )),
-        HumanMessage(content=(
+        )
+        user_content = (
             f"CODE:\n```python\n{state['code']}\n```\n\n"
             f"ERROR:\n{state['error']}"
-        )),
+        )
+    else:
+        # Reflexion — show previous attempts, ask for new strategy
+        recent_attempts = history[-3:]  # last 3 only
+        attempts_str = ""
+        for i, attempt in enumerate(recent_attempts, 1):
+            attempts_str += (
+                f"\n--- Attempt {i} ---\n"
+                f"Code tried:\n```python\n{attempt['code']}\n```\n"
+                f"Error produced:\n{attempt['error']}\n"
+                f"Diagnosis made:\n{attempt['diagnosis']}\n"
+                f"Patch applied:\n{attempt['patch_explanation'][:300]}\n"
+            )
+        system_content = (
+            "You are a Python debugging expert running a reflexion loop. "
+            "Previous fix attempts have failed. "
+            "You will be given the history of attempts and the current error. "
+            "Reflect on why previous patches failed, then diagnose the root cause "
+            "with a NEW strategy. Do not repeat a diagnosis that already failed. "
+            "Be specific about what was wrong with the previous approach."
+        )
+        user_content = (
+            f"ORIGINAL CODE:\n```python\n{state['original_code']}\n```\n\n"
+            f"PREVIOUS FAILED ATTEMPTS:{attempts_str}\n"
+            f"CURRENT CODE:\n```python\n{state['code']}\n```\n\n"
+            f"CURRENT ERROR:\n{state['error']}\n\n"
+            "What is wrong with the current approach, and what different strategy should be tried?"
+        )
+
+    messages = [
+        SystemMessage(content=system_content),
+        HumanMessage(content=user_content),
     ]
 
     response = client.invoke(messages)
     cost_update = _track_cost(state, response)
-    print(f"[diagnose] {response.content[:150]}")
+    print(f"[diagnose] {'(reflexion)' if is_reflexion else ''} {response.content[:150]}")
 
     return {
         "diagnosis": response.content,
