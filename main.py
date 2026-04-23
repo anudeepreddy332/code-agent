@@ -44,6 +44,7 @@ def main():
         "patch_explanation": None,
         "evaluator_score": None,
         "run_id": str(uuid.uuid4())[:8],
+        "attempt_history": [],
     }
     print(f"\nCode-Fix Agent | model={DEEPSEEK_MODEL} | prompt={PROMPT_VERSION}")
     print(f"Script: {script_path}")
