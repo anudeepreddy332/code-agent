@@ -44,6 +44,9 @@ def main():
         "patch_explanation": None,
         "evaluator_score": None,
         "run_id": str(uuid.uuid4())[:8],
+        "attempt_history": [],
+        "evaluator_feedback": None,
+        "expected_output": None,
     }
     print(f"\nCode-Fix Agent | model={DEEPSEEK_MODEL} | prompt={PROMPT_VERSION}")
     print(f"Script: {script_path}")
@@ -52,6 +55,11 @@ def main():
     start = time.time()
     final_state = graph.invoke(initial_state)
     elapsed = time.time() - start
+
+    if final_state.get("evaluator_score") is not None:
+        print(f"EVAL SCORE    : {final_state['evaluator_score']}/10")
+    if final_state.get("evaluator_feedback"):
+        print(f"EVAL FEEDBACK : {final_state['evaluator_feedback'][:150]}")
 
     print("\n" + "=" * 60)
     print(f"STATUS        : {final_state['status']}")

@@ -24,7 +24,7 @@ from langchain_openai import ChatOpenAI
 from langgraph.graph import StateGraph, START, END
 from src.code_agent.config import (DEEPSEEK_API_KEY, DEEPSEEK_MODEL, DEEPSEEK_BASE_URL,
                                    COST_PER_1M_INPUT_TOKENS, COST_PER_1M_OUTPUT_TOKENS,
-                                   MAX_COST_PER_RUN, MAX_ITERATIONS)
+                                   MAX_COST_PER_RUN, MAX_ITERATIONS, MIN_PASS_SCORE)
 from tools import execute_python
 
 
@@ -47,6 +47,9 @@ class AgentState(TypedDict):
     patch_explanation: str | None  # LLM's explanation of what it changed
     evaluator_score: int | None  # 1-10 score from evaluator node
     run_id: str                  # unique ID for this run (for logging)
+    attempt_history: list[dict]  # [{code, error, diagnosis, patch_explanation}, ...]
+    evaluator_feedback: str | None  # LLM's explanation of the score
+    expected_output: str | None     # optional: what correct stdout should look like
 
 
 def _make_client() -> ChatOpenAI:
@@ -92,13 +95,21 @@ def _track_cost(state: AgentState, response) -> dict:
 
 def node_execute(state: AgentState) -> dict:
     """
-    Execute current code in subprocess. Capture result into state.
+    Execute current code in subprocess. Archive previous attempt before overwriting error state.
+
+    Why archive here: after execute runs, the state fields (error, exit_code)
+    are about to be overwritten with the new execution result.
 
     Why this is a separate node and not part of diagnose:
     Separation of concerns. Execute is deterministic - same code, same result.
     Diagnose is an LLM call - expensive and non-deterministic.
     Keeping them separate means you can re-execute without re-diagnosing
     (useful for the evaluator node later).
+
+    Vulnerability: attempt_history grows unboundedly. At MAX_ITERATIONS=5,
+    max 5 entries — acceptable. If MAX_ITERATIONS is raised significantly,
+    the history injected into the prompt will eventually exceed context limits.
+    Mitigation: only inject the last 3 attempts into the prompt.
     """
     print(f"\n[execute] iteration {state['iterations'] + 1}")
     result = execute_python(state["code"])
@@ -106,11 +117,24 @@ def node_execute(state: AgentState) -> dict:
     if result["stderr"]:
         print(f"  stderr: {result['stderr'][:200]}")
 
+    # Archive the current attempt before state is overwritten
+    # Only archive if there was a previous diagnosis (skip the very first execution)
+
+    new_history = list(state.get("attempt_history", []))
+    if state.get("diagnosis") is not None:
+        new_history.append({
+            "code": state["code"],
+            "error": state.get("error", ""),
+            "diagnosis": state.get("diagnosis", ""),
+            "patch_explanation": state.get("patch_explanation" ""),
+        })
+
     return {
         "stdout": result["stdout"],
         "error": result["stderr"] if not result["success"] else None,
         "exit_code": result["exit_code"],
         "iterations": state["iterations"] + 1,
+        "attempt_history": new_history,
     }
 
 
@@ -155,7 +179,11 @@ def should_continue(state: AgentState) -> Literal["diagnose", "evaluate", "end"]
 
 def node_diagnose(state: AgentState) -> dict:
     """
-    Ask DeepSeek to diagnose the error. Store explanation in state.
+    Reflexion-enhanced diagnose node. Ask DeepSeek to diagnose the error. Store explanation in state.
+
+    On iteration 1: standard diagnosis — what's wrong with this code?
+    On iteration 2+: reflexion — here's what was tried, why did it fail,
+    what should be tried differently?
 
     Why separate from patch: forcing the LLM to first articulate what's wrong
     before patching improves patch quality. This is the Reflexion pattern -
@@ -169,23 +197,77 @@ def node_diagnose(state: AgentState) -> dict:
     The LLM can still diagnose this - infinite loop, blocking call, etc.
     """
     client = _make_client()
-    messages = [
-        SystemMessage(content=(
+
+    history = state.get("attempt_history", [])
+
+
+    eval_feedback = state.get("evaluator_feedback")
+    eval_score = state.get("evaluator_score")
+    evaluator_context = ""
+    if eval_score is not None and eval_score < MIN_PASS_SCORE:
+        evaluator_context = (
+            f"\n\nIMPORTANT: A code evaluator reviewed your previous fix and scored it "
+            f"{eval_score}/10 with this feedback:\n{eval_feedback}\n"
+            f"Your next diagnosis must address this evaluator feedback specifically."
+        )
+
+    is_reflexion = len(history) > 0
+
+    if not is_reflexion:
+        system_content = (
             "You are a Python debugging expert. "
             "You will be given a Python script and its error output. "
             "Diagnose the root cause of the error in 2-3 sentences. "
             "Be specific — identify the exact line or construct causing the failure. "
             "Do not suggest fixes yet. Just diagnose."
-        )),
-        HumanMessage(content=(
+        )
+        user_content = (
             f"CODE:\n```python\n{state['code']}\n```\n\n"
             f"ERROR:\n{state['error']}"
-        )),
+            f"{evaluator_context}"
+
+        )
+    else:
+        # Reflexion — show previous attempts, ask for new strategy
+        recent_attempts = history[-3:]  # last 3 only
+        attempts_str = ""
+        for i, attempt in enumerate(recent_attempts, 1):
+            attempts_str += (
+                f"\n--- Attempt {i} ---\n"
+                f"Code tried:\n```python\n{attempt['code']}\n```\n"
+                f"Error produced:\n{attempt['error']}\n"
+                f"Diagnosis made:\n{attempt['diagnosis']}\n"
+                f"Patch applied:\n{attempt['patch_explanation'][:300]}\n"
+            )
+        system_content = (
+            "You are a Python debugging expert running a reflexion loop. "
+            "Previous fix attempts have failed. "
+            "You will be given the history of attempts and the current error. "
+            "Reflect on why previous patches failed, then diagnose the root cause "
+            "with a NEW strategy. Do not repeat a diagnosis that already failed. "
+            "Be specific about what was wrong with the previous approach."
+        )
+        user_content = (
+            f"ORIGINAL CODE:\n```python\n{state['original_code']}\n```\n\n"
+            f"PREVIOUS FAILED ATTEMPTS:{attempts_str}\n"
+            f"CURRENT CODE:\n```python\n{state['code']}\n```\n\n"
+            f"CURRENT ERROR:\n{state['error']}\n\n"
+            "What is wrong with the current approach, and what different strategy should be tried?"
+            f"{evaluator_context}"
+
+        )
+
+
+
+
+    messages = [
+        SystemMessage(content=system_content),
+        HumanMessage(content=user_content),
     ]
 
     response = client.invoke(messages)
     cost_update = _track_cost(state, response)
-    print(f"[diagnose] {response.content[:150]}")
+    print(f"[diagnose] {'(reflexion)' if is_reflexion else ''} {response.content[:150]}")
 
     return {
         "diagnosis": response.content,
@@ -256,11 +338,119 @@ def node_patch(state: AgentState) -> dict:
 
 def node_evaluate(state: AgentState) -> dict:
     """
-    Evaluate whether the fix is correct. Will add evaluator node later.
-    For now: execution success = done.
+    LLM evaluator: scores the fixed code's correctness on a 1-10 scale.
+
+    Why not just check exit_code==0: a script can succeed (exit 0) and
+    produce wrong output (logic_error.py proved this). The evaluator reads
+    the original code's intent and the actual output and decides if the
+    fix is semantically correct, not just syntactically runnable.
+
+    Input to LLM:
+        - original_code: what the script was supposed to do
+        - fixed code: current state["code"]
+        - stdout: what the fixed code actually printed
+        - expected_output: optional hint from the caller
+        - evaluator_feedback from prior evaluation (if re-evaluating)
+
+    Output:
+        - evaluator_score: int 1-10
+        - evaluator_feedback: plain English explanation of the score
+        - status: "done" if score >= MIN_PASS_SCORE, else "running"
+          (running sends it back to diagnose with the feedback as context)
+
+    Score guide given to the LLM:
+        9-10: correct output, clean fix, no regressions
+        7-8:  correct output, minor style issues
+        5-6:  partially correct, some edge cases missed
+        3-4:  wrong output but no exception
+        1-2:  fix made things worse or fundamentally misunderstood the problem
+
+    Vulnerability: the evaluator itself can be wrong — LLMs misjudge
+    correctness, especially for numerical outputs. For Day 21 benchmarking,
+    compare evaluator verdicts against known expected_output strings.
+    MIN_PASS_SCORE=7 is a tuning knob — lower it if the evaluator is too strict.
     """
-    print("[evaluate] code executed successfully → marking done")
-    return {"status": "done", "evaluator_score": 10}
+
+    client = _make_client()
+
+    # Build evaluator prompt
+    expected_hint = (
+        f"\nExpected output (ground truth):\n{state['expected_output']}"
+        if state.get("expected_output")
+        else "\n(No expected output provided — infer correctness from code intent.)"
+    )
+    prior_feedback = (
+        f"\nPrior evaluation feedback (this is a re-evaluation after a failed fix):\n{state['evaluator_feedback']}"
+        if state.get("evaluator_feedback")
+        else ""
+    )
+
+    messages = [
+        SystemMessage(content=(
+            "You are a code correctness evaluator. "
+            "You will be given an original broken script, the fixed version, "
+            "and its actual output. Score the fix from 1 to 10. "
+            "Return ONLY a JSON object in this exact format, nothing else:\n"
+            '{"score": <int 1-10>, "feedback": "<one paragraph explanation>"}\n'
+            "Score guide:\n"
+            "9-10: correct output, clean minimal fix\n"
+            "7-8:  correct output, minor issues\n"
+            "5-6:  partially correct, edge cases missed\n"
+            "3-4:  wrong output but no exception\n"
+            "1-2:  fix made things worse"
+        )),
+        HumanMessage(content=(
+            f"ORIGINAL CODE:\n```python\n{state['original_code']}\n```\n\n"
+            f"FIXED CODE:\n```python\n{state['code']}\n```\n\n"
+            f"ACTUAL OUTPUT (stdout):\n{state['stdout'] or '(no output)'}\n"
+            f"STDERR:\n{state['error'] or '(none)'}"
+            f"{expected_hint}"
+            f"{prior_feedback}"
+        )),
+    ]
+
+    response = client.invoke(messages)
+    cost_update = _track_cost(state, response)
+
+    # Parse JSON response
+    import json
+    import re
+    raw = response.content.strip()
+    # Strip markdown fences if present
+    raw = re.sub(r"```json|```", "", raw).strip()
+    try:
+        parsed = json.loads(raw)
+        score = int(parsed["score"])
+        feedback = str(parsed["feedback"])
+    except (json.JSONDecodeError, KeyError, ValueError):
+        # If parsing fails, be conservative — treat as low score
+        score = 3
+        feedback = f"[evaluator parse error] Raw response: {raw[:300]}"
+    passed = score >= MIN_PASS_SCORE
+    print(f"[evaluate] score={score}/10 | {'PASS' if passed else 'FAIL'} | {feedback[:100]}")
+
+    return {
+        "evaluator_score": score,
+        "evaluator_feedback": feedback,
+        "status": "done" if passed else "running",
+        **cost_update,
+    }
+
+def should_evaluate_continue(state: AgentState) -> Literal["diagnose", "end"]:
+    """
+    After evaluation: if score passed, end. If failed, check if we can retry.
+
+    Why check iterations here: the agent might have already hit MAX_ITERATIONS
+    of execution attempts. If evaluate fails, but we're out of iterations, we
+    end as blocked rather than spinning forever.
+    """
+    if state["status"] == "done":
+        return "end"
+    if state["iterations"] >= MAX_ITERATIONS:
+        print(f"[gate] evaluation failed but max iterations reached → blocked")
+        return "end"
+    print(f"[gate] evaluation failed (score={state['evaluator_score']}) → sending back to diagnose")
+    return "diagnose"
 
 
 # Node 5: end
@@ -309,7 +499,15 @@ def build_graph() -> StateGraph:
     )
     builder.add_edge("diagnose", "patch")
     builder.add_edge("patch", "execute")       # patch → re-execute → check again
-    builder.add_edge("evaluate", END)
+
+    builder.add_conditional_edges(
+        "evaluate",
+        should_evaluate_continue,
+        {
+            "diagnose": "diagnose", # score failed → retry with feedback
+            "end": "end",           # score passed → done
+        }
+    )
     builder.add_edge("end", END)
 
     return builder.compile()
