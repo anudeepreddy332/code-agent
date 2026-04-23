@@ -19,7 +19,6 @@ langsmith_runs/
 langfuse_runs/
 
 # Outputs from code execution (temp scripts)
-tests/broken_scripts/__pycache__/
 *.pyc
 
 # IDE
@@ -29,3 +28,6 @@ tests/broken_scripts/__pycache__/
 
 # OS
 .DS_Store
+
+# Output
+outputs/
