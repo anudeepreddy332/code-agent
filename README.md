@@ -76,8 +76,10 @@ uv sync
 
 3. Set environment variables (.env)  
 DEEPSEEK_API_KEY=your_key  
-LANGSMITH_API_KEY=optional
-
+LANGSMITH_API_KEY=your_key
+LANGCHAIN_TRACING_V2=true
+LANGCHAIN_PROJECT=code-agent
+4. 
 4. Run the agent on a broken script  
 ```
 python main.py --file tests/broken_scripts/syntax_error.py  
@@ -88,9 +90,9 @@ python main.py --file tests/broken_scripts/syntax_error.py
 
 - [x] Day 15: Rebuild Phase 1 agent in LangGraph (familiarization)
 - [x] Day 16: Sandboxed code execution tool
-- [ ] Day 17: Reflexion loop (diagnose + patch)
-- [ ] Day 18: Evaluator node (1–10 score)
-- [ ] Day 19: LangSmith tracing
+- [x] Day 17: Reflexion loop (diagnose + patch)
+- [x] Day 18: Evaluator node (1–10 score)
+- [x] Day 19: LangSmith tracing
 - [ ] Day 20: Human-in-the-loop checkpoint
 - [ ] Day 21: Benchmarking (fix rate, cost per fix)
 
