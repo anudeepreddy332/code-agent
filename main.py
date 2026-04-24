@@ -13,8 +13,12 @@ or max iterations are reached. Final state is printed as a report.
 import sys
 import uuid
 import time
+from pathlib import Path
+
 from graph import build_graph
 from src.code_agent.config import PROMPT_VERSION, DEEPSEEK_MODEL
+import os
+from datetime import datetime as dt
 
 def main():
     if len(sys.argv) < 2:
@@ -53,7 +57,18 @@ def main():
     print("=" * 60)
 
     start = time.time()
-    final_state = graph.invoke(initial_state)
+
+    script_name = Path(script_path).stem    # "logic_error" from "tests/broken_scripts/logic_error.py"
+    run_name = f"{script_name}_{dt.now().strftime('%H%M%S')}"
+
+    config = {
+        "run_name": run_name,
+    }
+
+    os.environ["LANGCHAIN_TAGS"] = f"phase3, day19, {script_name}"
+
+    final_state = graph.invoke(initial_state, config)
+
     elapsed = time.time() - start
 
     if final_state.get("evaluator_score") is not None:

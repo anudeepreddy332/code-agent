@@ -11,6 +11,12 @@ DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 DEEPSEEK_MODEL = "deepseek-chat"
 
+# LangSmith observability
+LANGSMITH_API_KEY = os.getenv("LANGSMITH_API_KEY")
+LANGSMITH_PROJECT = os.getenv("LANGSMITH_PROJECT")
+TRACING_ENABLED = bool(LANGSMITH_API_KEY)   # True only if key is set
+
+
 # Agent limits
 MAX_ITERATIONS = 5          # max fix attempts before giving up
 MAX_COST_PER_RUN = 0.10     # USD — hard ceiling per run
