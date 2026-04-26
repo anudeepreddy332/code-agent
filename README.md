@@ -93,9 +93,8 @@ python main.py --file tests/broken_scripts/syntax_error.py
 - [x] Day 17: Reflexion loop (diagnose + patch)
 - [x] Day 18: Evaluator node (1–10 score)
 - [x] Day 19: LangSmith tracing
-- [ ] Day 20: Human-in-the-loop checkpoint
-- [ ] Day 21: Benchmarking (fix rate, cost per fix)
-
+- [x] Day 20: Human-in-the-loop checkpoint
+- [x] Day 21: Benchmarking (fix rate, cost per fix)
 
 ---
 
