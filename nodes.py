@@ -13,6 +13,7 @@ Run: imported by graph.py. No standalone execution.
 """
 
 import json
+import os
 import re
 import difflib
 from typing import Literal
@@ -46,7 +47,7 @@ def _make_client() -> ChatOpenAI:
     """
     return ChatOpenAI(
         model=DEEPSEEK_MODEL,
-        api_key=DEEPSEEK_API_KEY,
+        api_key=os.getenv("DEEPSEEK_API_KEY"),
         base_url=DEEPSEEK_BASE_URL,
         temperature=0.3,
     )
@@ -294,7 +295,7 @@ def node_human_approval(state: dict) -> dict:
     """
     Interrupt the graph and wait for human approval of the patch.
 
-    bypass_hit1=True skips the interrupt - used by benchmark.py for
+    bypass_hitl=True skips the interrupt - used by benchmark.py for
     non-interactive runs. Without bypass, the graph suspends here via
     interrupt() and resumes when main.py calls graph.invoke(Command(resume=...))
 
@@ -310,7 +311,7 @@ def node_human_approval(state: dict) -> dict:
     end as "blocked" after N rejections.
     """
 
-    if state.get("bypass_hit1"):
+    if state.get("bypass_hitl"):
         print("[human] Auto-approved (benchmark mode)")
         return {"human_approval": "approved", "rejection_reason": None}
 
