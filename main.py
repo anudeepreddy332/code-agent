@@ -24,6 +24,8 @@ from graph import build_graph
 from src.code_agent.config import PROMPT_VERSION, DEEPSEEK_MODEL
 import os
 from datetime import datetime as dt
+import json as _json
+from pathlib import Path as _Path
 
 def main():
     if len(sys.argv) < 2:
@@ -133,6 +135,35 @@ def main():
     if final_state["status"] == "done":
         print("\nFIXED CODE:")
         print(final_state["code"])
+
+    _save_run_log(final_state, script_name, elapsed)
+
+
+def _save_run_log(final_state: dict, script_name: str, elapsed: float):
+    """
+    Save a structured log of this run to outputs/run_logs/.
+    Captures everything needed to reconstruct or debug a run.
+    """
+    log_dir = _Path("outputs/run_logs")
+    log_dir.mkdir(parents=True, exist_ok=True)
+
+    log = {
+        "run_id": final_state["run_id"],
+        "script": script_name,
+        "status": final_state["status"],
+        "iterations": final_state["iterations"],
+        "total_cost_usd": final_state["total_cost_usd"],
+        "total_tokens": final_state["total_tokens"],
+        "elapsed_s": round(elapsed, 2),
+        "evaluator_score": final_state.get("evaluator_score"),
+        "evaluator_feedback": final_state.get("evaluator_feedback"),
+        "final_code": final_state["code"],
+        "attempt_history": final_state.get("attempt_history", []),
+    }
+
+    log_path = log_dir / f"{script_name}_{final_state['run_id']}.json"
+    log_path.write_text(_json.dumps(log, indent=2))
+    print(f"Run log saved → {log_path}")
 
 
 if __name__ == "__main__":
