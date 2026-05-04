@@ -71,10 +71,10 @@ Every transition is an explicit, typed edge.  The whole state is visible and che
 |-------------------|-------------|
 | Fix rate          | 95% (19/20) |
 | Blocked / Error   | 0%          |
-| Mean iterations   | 2.3         |
+| Mean iterations   | 2.4         |
 | Mean cost per run | $0.0006     |
 | Total cost (20)   | $0.0128     |
-
+| Mean evaluator score  | 9.7 / 10    |
 The only script that didn’t pass (`import_error.py`) requires NumPy, which isn’t installed in the sandbox.  That’s an environment limitation, not an agent failure.
 
 ---
@@ -150,15 +150,7 @@ python -m scripts.regression_check
 python -m scripts.test_resilience
 ```
 
----
-
-## Phase 3.5 Completion (all criteria met ✅)
-
-- ✔ 20 test cases end‑to‑end
-- ✔ Failures logged and regression‑tracked
-- ✔ LangSmith traces reviewed
-- ✔ Retry & fallback verified (timeout, cost ceiling, max iterations, bad API key)
-- ✔ Human‑in‑the‑loop checkpoint works interactively and in auto‑mode
+All resilience scenarios validated: timeouts, cost ceiling breaches, max iteration limits, and invalid API keys — all handled gracefully with no system crashes.
 
 ---
 
